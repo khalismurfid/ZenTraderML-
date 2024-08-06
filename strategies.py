@@ -1,7 +1,8 @@
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
-from ta.trend import MACD
+from ta.trend import MACD, EMAIndicator, ADXIndicator  # ADXIndicator is under trend
+from ta.momentum import StochasticOscillator, RSIIndicator
 from stratestic.backtesting.helpers.evaluation import SIDE
 from stratestic.strategies._mixin import StrategyMixin
 
@@ -174,3 +175,77 @@ class StochasticOscillatorStrategy(StrategyMixin):
             row = self.data.iloc[-1]
         return int(row[SIDE])
 
+class StochasticEMAStrategy(StrategyMixin):
+    """Stochastic Oscillator and EMA Strategy with ADX"""
+    def __init__(self, k_length, k_smoothing, d_smoothing, adx_length, adx_smoothing, adx_threshold, rsi_length, data=None, **kwargs):
+        self._k_length = k_length
+        self._k_smoothing = k_smoothing
+        self._d_smoothing = d_smoothing
+        self._adx_length = adx_length
+        self._adx_smoothing = adx_smoothing
+        self._adx_threshold = adx_threshold
+        self._rsi_length = rsi_length
+
+        StrategyMixin.__init__(self, data, **kwargs)
+
+        self.params = OrderedDict(
+            k_length=lambda x: int(x),
+            k_smoothing=lambda x: int(x),
+            d_smoothing=lambda x: int(x),
+            adx_length=lambda x: int(x),
+            adx_smoothing=lambda x: int(x),
+            adx_threshold=lambda x: float(x),
+            rsi_length=lambda x: int(x)
+        )
+
+    def __repr__(self):
+        return "{}(symbol = {}, k_length = {}, k_smoothing = {}, d_smoothing = {}, adx_length = {}, adx_smoothing = {}, adx_threshold = {}, rsi_length = {})".format(
+            self.__class__.__name__, self.symbol, self._k_length, self._k_smoothing, self._d_smoothing, self._adx_length, self._adx_smoothing, self._adx_threshold, self._rsi_length)
+
+    def update_data(self, data):
+        """Calculate the Stochastic Oscillator, EMAs, ADX, and RSI for the given data."""
+        high = data['high']
+        low = data['low']
+        close = data['close']
+
+        # Calculate EMAs
+        ema20 = EMAIndicator(close, 20).ema_indicator()
+        ema50 = EMAIndicator(close, 50).ema_indicator()
+        ema100 = EMAIndicator(close, 100).ema_indicator()
+        ema200 = EMAIndicator(close, 200).ema_indicator()
+        ema400 = EMAIndicator(close, 400).ema_indicator()
+
+        # Calculate Stochastic Oscillator
+        stoch = StochasticOscillator(high=high, low=low, close=close, window=self._k_length, smooth_window=self._k_smoothing)
+        data['%k'] = stoch.stoch()
+        data['%d'] = data['%k'].rolling(window=self._d_smoothing).mean()  # Smooth %D
+
+        # Calculate ADX
+        adx = ADXIndicator(high=high, low=low, close=close, window=self._adx_length).adx()
+        data['adx'] = adx
+
+        # Calculate RSI
+        rsi = RSIIndicator(close=close, window=self._rsi_length).rsi()
+        data['rsi'] = rsi
+
+        # Determine highest EMA
+        data['highest_ema'] = np.maximum.reduce([ema20, ema50, ema100, ema200, ema400])
+
+        return self.calculate_positions(data)
+
+    def calculate_positions(self, data):
+        """Calculate positions based on strategy rules."""
+        # Ensure the SIDE column is initialized to zero
+        data[SIDE] = data.get(SIDE, 0)
+    
+        buy_condition = (data['%k'] < 2) & (data[SIDE].shift(1).fillna(0) == 0)
+        sell_condition = (data['close'] >= data['highest_ema']) & (data[SIDE].shift(1).fillna(0) == 1)
+    
+        data[SIDE] = np.where(buy_condition, 1, np.where(sell_condition, 0, data[SIDE].shift(1).fillna(0)))
+        return data
+
+
+    def get_signal(self, row=None):
+        if row is None:
+            row = self.data.iloc[-1]
+        return int(row[SIDE])
